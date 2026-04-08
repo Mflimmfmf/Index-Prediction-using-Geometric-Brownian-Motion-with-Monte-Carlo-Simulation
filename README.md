@@ -1,6 +1,6 @@
 Project Manual
 
-1. Manually download the historical data from Investing.com
+1. Manually download the four historical data from Investing.com
 
 2. Read the data through Quant_Lab.Rmd
 
