@@ -42,7 +42,7 @@ library(tidyr)
 
 ```{r}
 data_name <- "FTSE China A50"
-filepath<- paste0("C:\\Users\\User\\Programming\\R programming\\R project\\dataset\\", data_name," Historical Data.csv")
+filepath<- paste0("C:\\Users\\User\\Programming\\R project\\dataset\\", data_name," Historical Data.csv")
 data<- read.csv(filepath, header = TRUE ,stringsAsFactors = FALSE)
 
 ```
