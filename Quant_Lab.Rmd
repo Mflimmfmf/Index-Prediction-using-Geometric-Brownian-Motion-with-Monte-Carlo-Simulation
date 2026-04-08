@@ -1,0 +1,672 @@
+---
+title: "GBM(KLCI)"
+author: "Lim Ming Feng"
+date: "2026-02-06"
+output: html_document
+---
+
+```{=html}
+
+<style>
+body {
+  background-color: lightgrey; 
+
+}
+</style>
+```
+
+## Description
+
+```{=html}
+
+<p> I had download the some of indexes dataset from investing.com and saved it to my own project directory. I split my data into two sets one is training data, another is testing data based on the following date:
+
+ <ol>training data (2014.1.1 - 2023.12.31)</ol>
+
+ <ol>testing data (2024.1.1 - 2024.12.31)</ol>
+
+</p>
+```
+
+## Data preprocessing
+
+```{r}
+library(lubridate)
+library(xts)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+```
+
+### read dataset from csv
+
+```{r}
+data_name <- "FTSE China A50"
+filepath<- paste0("C:\\Users\\User\\Programming\\R programming\\R project\\dataset\\", data_name," Historical Data.csv")
+data<- read.csv(filepath, header = TRUE ,stringsAsFactors = FALSE)
+
+```
+
+### convert date to proper format
+
+```{r}
+#2. convert date to proper format
+data$Date <- as.Date(data$Date, format = "%m/%d/%Y") # if do not have this line the date cannot be visible 
+data$Date <- ymd(data$Date)
+
+```
+
+### Clean numeric columns (remove columnns)
+
+```{r}
+data$Price <- as.numeric(gsub(",", "", data$Price))
+
+```
+
+## Data Understanding
+
+```{r}
+head(data) # first 5 data 
+```
+
+```{r}
+str(data) # data structure
+```
+
+```{r}
+head(data$Date)   # earliest dates
+tail(data$Date)   # latest dates
+any(duplicated(data$Date))   # FALSE is good
+any(is.na(data$Date))        # should be FALSE
+any(is.na(data$Price))       # if TRUE, decide how to handle (remove or impute)
+
+```
+
+### Drop unused data
+
+```{r}
+data_ <- data[, c("Date", "Price")] 
+
+```
+
+### Arrange data in chronological order
+
+```{r}
+data_ <- data_[order(data$Date), ] 
+head(data_)
+```
+
+### Split data
+
+```{r}
+train_start <- ymd("2014-01-01")
+train_end <- ymd("2023-12-31")
+test_start <- ymd("2024-01-01")
+test_end <- ymd("2024-12-31")
+
+training_data <- data_[data_$Date >= train_start & data_$Date <= train_end, ]
+testing_data <- data_[data_$Date >= test_start & data_$Date <= test_end, ]
+
+
+```
+
+## Parameter Estimation
+
+### Compute Log Returns
+
+simple return -\> mu = mu_log + (sigma\^2/2) log return -\> mu_log = mu-(sigma\^2/2)
+
+in this case Compute simple return:
+
+```         
+(Price_Today/ Price_yesterday) - 1
+```
+
+```{r}
+# simple return 
+#data_sr <- (training_data$Price/lag(training_data$Price))-1
+
+#sr <- na.omit(data_sr)
+#options(digits =10)
+
+#head(sr)
+
+```
+
+```{r}
+
+# log return 
+data_lr <- diff(log(training_data$Price))
+
+options(digits =10)
+
+head(data_lr)
+```
+
+```{r}
+length(data_lr)
+
+```
+
+### Define variables
+
+```{r}
+S0 <- training_data$Price[nrow(training_data)] #use the last price from training data 
+dt <- 1 #time increment 
+
+# Assuming you have 'train_end' and 'test_end' defined as strings
+# For test data 
+
+num_of_wkdays <- tibble(
+    date = seq(ymd(train_end) + days(1), ymd(test_end), by = "day")
+  ) %>%
+  mutate(
+    is_weekday = wday(date, week_start = 1) <= 5 # Monday=1, Sunday=7. Check if day is <= Friday (5)
+  ) %>%
+  summarize(
+    n_of_wkdays = sum(is_weekday)
+  ) %>%
+  pull()
+
+num_of_wkdays
+```
+
+```{r}
+T <- num_of_wkdays
+N <- T/dt
+t <- 1:N   # set up time step  
+mu_log <- mean(data_lr) # daily mu 
+sigma <- sd(data_lr)   # daily sigma 
+num_of_sim <- 10000
+
+
+# Generate random number
+set.seed(2026)
+b <- matrix(rnorm(N * num_of_sim, mean = 0, sd = 1), 
+            nrow = N, 
+            ncol = num_of_sim)
+
+
+# cumulative sum function 
+#W <- apply(b, MARGIN = 2, FUN = cumsum)
+
+
+```
+
+## Model Development and Simulation
+
+```{r}
+N_steps <- N +1  #include Day 0 (S0)
+drift <- mu_log 
+
+sim_prices <- matrix(NA, nrow = N_steps, ncol = num_of_sim)
+sim_prices[1, ] <- S0 # start price S0 at first row
+
+# Simulation loop
+      for(i in 2:N_steps){
+        diffusion <- (sigma*b[i-1, ])
+        daily_log_return <- drift + diffusion
+        sim_prices[i,] <- sim_prices[i-1, ] * exp(daily_log_return)    # t is equal to 1 
+      }
+
+head(sim_prices[, 1:5])
+
+
+```
+
+## Model Evaluation
+
+no arbitrage condition
+
+```{r}
+# Calculate min , max prices per day across each simulation
+S_max <- apply(sim_prices, MARGIN = 1, FUN = max)
+S_min <- apply(sim_prices, MARGIN = 1, FUN = min)
+
+# find midpoint 
+S_pred <- 0.5*S_max + 0.5*S_min
+
+
+# --- 1. Recreate the full list of all simulated weekdays ---
+
+# Assuming 'train_end' and 'test_end' are defined as character strings 
+# from your previous steps (e.g., "2023-12-31" and "2024-12-31")
+
+all_sim_dates <- tibble(
+  Date = seq(as.Date(train_end) + 1, as.Date(test_end), by = "day")
+) %>%
+mutate(
+  Weekday_Name = weekdays(Date)
+) %>%
+filter(
+  Weekday_Name %in% c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday")
+) %>%
+select(Date)
+
+
+# --- 2. Combine simulation results with these dates ---
+
+# S_pred still needs the Day 0 value removed
+sim_results_df <- tibble(
+  Date = all_sim_dates$Date,
+  pred = S_pred[-1] 
+)
+
+
+
+
+
+# --- 3. Perform an INNER JOIN to align real data and predictions by date ---
+
+# This step keeps only the dates that exist in *both* data frames (skipping holidays)
+final_df <- inner_join(
+  testing_data %>% select(Date, real = Price), # Select real price and rename column
+  sim_results_df,                              # Your simulation results
+  by = "Date"
+)
+
+# calculate log returns for the real data 
+final_df <- final_df %>%
+  mutate(
+    real_log_ret = log(real/lag(real))
+  )
+
+# Calculate Log Returns for the Predicted Prices
+
+last_train_price <- tail(training_data$Price, 1)
+
+final_df <- final_df %>%
+  mutate(
+    pred_log_ret = log(pred / lag(pred, default = last_train_price)) # mu_log + sigma*Z_i
+  ) %>%
+  na.omit() # Remove the first row if needed
+
+
+
+# 3. Compute Metrics on Log Returns
+mse_log <- mean((final_df$pred_log_ret - final_df$real_log_ret)^2)
+rmse_log <- sqrt(mse_log)
+
+# For MAPE, using log returns can be tricky (since they can be zero). 
+# Usually, for returns, we just look at RMSE or MAE.
+mae_log <- mean(abs(final_df$pred_log_ret - final_df$real_log_ret))
+
+print(paste("Log-Return RMSE:", round(rmse_log, 6)))
+print(paste("Log-Return MAE:", round(mae_log, 6)))
+
+```
+
+## Interpretation
+
+```{r}
+
+cat("On Average, GBM model predictions deviates about $", round(rmse_log,2), "from actual price.")
+
+# can use rmse to divide S0 to check the relative error percentage 
+
+cat("The has performed an accuracy of (",round(1 -mae_log,2)," %), the result has shown that only ", round(mae_log,2), "% error")
+```
+
+## Plotting
+
+## GBM with MC simulation
+
+```{r GBM and MC plot }
+ # --- 1. Prepare Simulation Data for Plotting ---
+
+# Add dates to the simulated prices matrix (from S0 start date)
+all_sim_dates <- tibble(
+  Date = seq(as.Date(train_end) + 1, as.Date(test_end), by = "day")
+) %>%
+  filter(weekdays(Date) %in% c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday")) %>%
+  add_row(Date = as.Date(train_end), .before = 1) # Add S0 date
+
+# Convert the simulation matrix to a tidy (long) format DataFrame
+sim_plot_data <- as.data.frame(sim_prices) %>%
+  mutate(Date = all_sim_dates$Date) %>%
+  pivot_longer(
+    cols = -Date,
+    names_to = "Scenario",
+    values_to = "Price"
+  )
+
+# --- 2. Create the GBM MC Plot ---
+
+ggplot() +
+  # Plot all the individual simulation paths (light gray, thin lines)
+  geom_line(data = sim_plot_data, 
+            aes(x = Date, y = Price, group = Scenario, color = Scenario), 
+            alpha = 0.5, size = 0.5 ) +
+  
+  # Plot the actual historical prices (blue, thick line)
+  geom_line(data = final_df, 
+            aes(x = Date, y = real), 
+            color = "blue", size = 1.2) +
+  
+  # Plot your average prediction (red, thick dashed line)
+  geom_line(data = final_df, 
+            aes(x = Date, y = pred), 
+            color = "red", size = 1, linetype = "dashed") +
+  
+  # Labels and theming
+  labs(
+    title = "Geometric Brownian Motion Monte Carlo Simulation",
+    subtitle = paste("Forecast from", as.Date(train_end), "to", as.Date(test_end)),
+    x = "Date",
+    y = paste(data_name, "Index Price")
+  ) +
+  theme_minimal() + theme(legend.position = "none")
+   
+```
+
+### Predicted data vs Actual data
+
+```{r}
+plot_data <- final_df %>%
+  pivot_longer(
+    cols = c(real_log_ret, pred_log_ret),
+    names_to = "Type",
+    values_to = "Price"
+  ) %>%
+  mutate(Type = recode(Type, 
+                       "real_log_ret" = "Actual Log Return", 
+                       "pred_log_ret" = "Predicted Log Return"))
+
+# Then in ggplot:
+ggplot(data = plot_data, aes(x = Date, y = Price, color = Type)) +
+  geom_line(linewidth = 1) +
+  scale_color_manual(values = c("Actual Log Return" = "blue", "Predicted Log Return" = "red")) + 
+  theme_minimal()+   
+  labs(
+    title = paste(data_name, "(Actual vs Predicted Log Returns)"),
+    
+  )
+```
+
+```{r}
+# 1. Define your bounds based on your sigma and drift
+# (Replace 'mu' and 'sigma' with your actual calculated values)
+final_df <- final_df %>%
+  mutate(
+    lower_ci = drift - (1.96 * sigma),
+    upper_ci = drift + (1.96 * sigma)
+  )
+
+# 2. Prepare the line data (keeping the CI columns separate)
+plot_lines <- final_df %>%
+  pivot_longer(
+    cols = c(real_log_ret, pred_log_ret),
+    names_to = "Type",
+    values_to = "Price"
+  ) %>%
+  mutate(Type = recode(Type, 
+                       "real_log_ret" = "Actual Log Return", 
+                       "pred_log_ret" = "Predicted Log Return"))
+
+# 3. Plot with geom_ribbon
+ggplot() +
+  # Add the shaded confidence interval first (so it's in the background)
+  geom_ribbon(data = final_df, 
+              aes(x = Date, ymin = lower_ci, ymax = upper_ci), 
+              fill = "grey80", alpha = 0.5) +
+  # Add the lines
+  geom_line(data = plot_lines, aes(x = Date, y = Price, color = Type), linewidth = 0.8) +
+  # Formatting
+  scale_color_manual(values = c("Actual Log Return" = "blue", "Predicted Log Return" = "red")) +
+  labs(title = "Log Returns with 95% Confidence Interval",
+       subtitle = "Grey area represents the range where 95% of returns are expected to fall",
+       y = "Log Return") +
+  theme_minimal()
+
+```
+
+```{r}
+# Reshape the data from wide format (real, pred columns) to long format (Type, Price columns)
+# This is necessary for ggplot to easily draw two separate lines
+plot_data <- final_df %>%
+  pivot_longer(
+    cols = c(real, pred), # Select the columns to pivot
+    names_to = "Type",    # Name the new column 'Type' (will contain 'real' or 'pred')
+    values_to = "Price"   # Name the value column 'Price'
+  )
+
+# Create the ggplot visualization
+ggplot(data = plot_data, aes(x = Date, y = Price, color = Type)) +
+  geom_line(size = 1) + # Draw the lines
+  labs(
+    title = "GBM Forecast vs. Actual Market Prices (Test Period = 2024)",
+    x = "Date",
+    y =  paste(data_name, "Index Price"),
+    color = "Price Type"
+  ) +
+  scale_color_manual(values = c("real" = "blue", "pred" = "red")) + # Assign specific colors
+  theme_minimal() # Use a clean theme
+
+#stop("Stopping here")
+
+```
+
+## Residuals Plot
+
+```{r}
+library(patchwork)
+## residuals plot 
+
+# price residuals (heteroscedastic)
+p1 <- ggplot(final_df, aes(x = pred, y = (real - pred))) +
+  geom_point(alpha = 0.5, color = "darkblue") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  labs(title = "Price Residuals: The 'Fan'?", 
+       x = "Predicted Price", y = "Error (unit index)") +
+  theme_minimal()
+
+# 2. Log Return Residuals (Likely Homoscedastic)
+p2 <- ggplot(final_df, aes(x = pred_log_ret, y = (real_log_ret - pred_log_ret))) +
+  geom_point(alpha = 0.5, color = "darkgreen") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  labs(title = "Log Return Residuals: The 'Tube'?", 
+       x = "Predicted Log Return", y = "Error (Log)") +
+  theme_minimal()
+
+p1 + p2
+
+```
+#  Hyperparameter tuning for drift
+## rolling window 
+```{r}
+# n is the window size (e.g., last 60 trading days)
+calc_static_mle_mu <- function(returns, n = 60) {
+  # Simply calculate the average (MLE) of the last 'n' days
+  static_mu <- mean(tail(returns, n), na.rm = TRUE)
+  return(static_mu)
+}
+
+# Example: Get one single drift value from the end of your training data
+mu_daily_tuned <- calc_static_mle_mu(data_lr, n = 60)
+cat("Static MLE Mu: ", mu_daily_tuned)
+```
+
+## Simple Return
+
+
+```{r}
+# 1. Take the average of your log returns (The MLE)
+avg_log_ret <- mean(data_lr, na.rm = TRUE)
+
+# 2. Calculate the Volatility
+sigma_val_ <- sd(data_lr, na.rm = TRUE)
+
+# 3. TUNE THE DRIFT (Adding back the "Vol Drag")
+mu_simple <- avg_log_ret + (0.5 * sigma_val_^2)
+cat("Simple Return: " , mu_simple)
+```
+
+# Hyperparameter tuning for volatility
+
+
+## Daily Realized Volatility Estimation -- (Static Rolling Windows == 60 days)
+
+```{r}
+# n is the window size (e.g., last 60 trading days)
+calc_daily_realized_vol <- function(returns, n = 60) {
+  # Simply calculate the standard deviation of the last 'n' days
+
+  daily_rv <- sd(tail(returns, n))
+  return(daily_rv)
+}
+
+# Example:
+sigma_daily_tuned <- calc_daily_realized_vol(data_lr, n = 60)
+cat("Daily Realized Volatility: ", sigma_daily_tuned)
+```
+
+## Daily EWMA Volatility
+
+```{r}
+
+
+calc_daily_ewma_vol <- function(returns, lambda = 0.94) {
+  n <- length(returns)
+  variance <- numeric(n)
+  
+  # Initialize with the historical variance of the returns
+  variance[1] <- var(returns) 
+  
+  # EWMA Recursive Formula: σ²_t = λ * σ²_{t-1} + (1-λ) * r²_{t-1}
+  for (i in 2:n) {
+    variance[i] <- lambda * variance[i-1] + (1 - lambda) * (returns[i-1]^2)
+  }
+  
+  # Take the square root of the latest variance
+  latest_daily_vol <- sqrt(tail(variance, 1))
+  return(latest_daily_vol)
+}
+
+# Example:
+sigma_daily_ewma <- calc_daily_ewma_vol(data_lr)
+cat("Daily EWMA Volatility: ", sigma_daily_ewma)
+
+```
+
+#MLE
+
+```{r}
+# 1. Load necessary libraries
+if (!require("fitdistrplus")) install.packages("fitdistrplus")
+library(fitdistrplus)
+
+# 2. Prepare your data
+# Replace 'your_price_vector' with your actual price data
+actual_prices <- c(training_data$Price) 
+train_log_ret <- diff(log(actual_prices))
+
+# 3. Perform MLE (Fitting a Normal distribution to Log Returns)
+# GBM assumes log returns follow a normal distribution N(mu, sigma^2)
+mle_fit <- fitdist(train_log_ret, "norm", method = "mle")
+
+# 4. Extract the Optimal Parameters
+mu_mle <- mle_fit$estimate["mean"]
+sigma_mle <- mle_fit$estimate["sd"]
+
+# 5. daily parameters
+
+mu_daily_mle <- mu_mle 
+sigma_daily_mle <- sigma_mle
+
+# Print results
+cat("--- MLE Results ---\n")
+print(mle_fit)
+cat("\nDaily Drift (mu):", round(mu_daily_mle, 4))
+cat("\nDaily Volatility (sigma):", round(sigma_daily_mle, 4))
+
+# 6. Diagnostic Plot
+plot(mle_fit)
+
+```
+
+##Simulation
+
+```{r}
+# --- Step 7: GBM Monte Carlo Simulation ---
+set.seed(2026) # For reproducibility
+n_paths <- 10000
+n_days <- nrow(final_df)
+S0 <- 1 # Normalizing starting price to 1 for easier error comparison
+
+# Generate a matrix of random shocks (N x days)
+Z <- matrix(rnorm(n_paths * n_days), ncol = n_days)
+
+# Calculate simulated log-returns for each path
+# Formula: (mu - 0.5 * sigma^2) * dt + sigma * sqrt(dt) * Z
+# Correct: mu_mle already accounts for the -0.5*sigma^2 term
+
+
+#tuning
+
+# Drift
+
+# mu_mle =mu_log 
+# mu_simple 
+# mu_daily_tuned (rolling 60 days)
+
+# Volatility
+# sigma_mle
+# sigma_daily_tuned (rolling 60 days)
+# sigma_daily_ewma
+
+sim_log_rets <- mu_daily_tuned+ sigma_mle* Z
+
+# Convert log-returns to cumulative price paths
+# Use apply + cumsum to convert daily returns into price levels
+sim_paths <- t(apply(sim_log_rets, 1, function(x) S0 * exp(cumsum(x))))
+
+# Calculate daily min and max across ALL paths for each day
+S_max_ <- apply(sim_paths, 2, max)
+S_min_ <- apply(sim_paths, 2, min)
+
+# Calculate your custom Midpoint prediction
+pred_path <- 0.5 * S_max_ + 0.5 * S_min_
+
+# Calculate the "Real" path from your actual log-returns
+real_path <- S0 * exp(cumsum(final_df$real_log_ret))
+
+
+
+```
+
+## Evaluation
+
+```{r}
+# --- Step 8: Evaluation Metrics ---
+# Root Mean Squared Error (RMSE)
+rmse_val <- sqrt(mean((real_path - pred_path)^2))
+
+# Mean Absolute Percentage Error (MAPE)
+mape_val <- mean(abs((real_path - pred_path) / real_path)) * 100
+
+cat("\n--- Evaluation Results ---")
+cat("\nRMSE:", round(rmse_val, 6))
+cat("\nMAPE:", round(mape_val, 2), "%\n")
+```
+
+## differences
+
+```{r}
+
+# --- Step 9: Visualization ---
+plot(real_path, type = "l", col = "blue", lwd = 2, 
+     ylim = range(c(real_path, sim_paths[1:10,])),
+     main = "Actual vs. Predicted GBM Paths (2024)", 
+     xlab = "Trading Days", ylab = paste(data_name, "Normalized Price"))
+
+# Add a few individual simulation paths in light gray
+for(i in 1:100) lines(sim_paths[i,], col = rgb(0.5, 0.5, 0.5, 0.2))
+
+# Add the Predicted Mean path
+lines(pred_path, col = "red", lwd = 2, lty = 1)
+
+# Add Legend  
+legend("topleft", legend = c("Real Data", "GBM Prediction", "Sim Paths"),
+       col = c("blue", "red", "gray"), lty = c(1, 1, 1), lwd = 2)
+
+```
