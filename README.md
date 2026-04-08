@@ -1,4 +1,4 @@
-Project Manual
+Project User Manual
 
 1. Manually download the four historical data from Investing.com
 
